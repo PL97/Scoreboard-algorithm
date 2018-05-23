@@ -4,6 +4,10 @@
 #include<sstream>
 #include<string>
 #include<vector>
+#include <windows.h> 
+#include <thread>
+#include<mutex>
+std::mutex some_mutex;
 
 using namespace std;
 
@@ -18,11 +22,12 @@ using namespace std;
 #define MULCIRCLE 10
 #define DIVCIRCLE 40
 #define SLCIRLCE 1
+#define CIRCLETIME 100
 
 
 //功能部件
-enum FU{FU_NIL, Integer, Mult1, Mult2, Add, Divide};
 const int fu_size = 5;
+enum FU{FU_NIL = fu_size, Integer = 0, Mult1, Mult2, Add, Divide};
 
 //操作类型
 enum OP{OP_NIL, L_D, S_D, SUB_D, ADD_D, DIV_D, MULT_D};
@@ -133,7 +138,10 @@ FU getFU(instructStatus *Ipointer);
 
 int getCirlce(instructStatus *Ipointer);
 
-void display(Score *S);
+void display(Score *S, int i);
+
+int completedI = 0;
+void pipLine(Score *S, int i);
 
 //流出指令
 bool pipOut(Score *S);
@@ -150,12 +158,39 @@ bool writeBack(Score *S);
 int main(){
 	Score* S = new Score();
 	S->instr_size = loadData(S);
-	while (!S->I_status[S->instr_size-1]->status[WRITEBACK]){
-		display(S);
-		pipOut(S);
-		readOpParam(S);
-		execute(S);
-		writeBack(S);
+	int opt;
+	cin >> opt;
+	if (opt == 1){
+		while (completedI < S->instr_size){
+			pipOut(S);
+			readOpParam(S);
+			execute(S);
+			if (writeBack(S)) completedI++;
+			display(S, 0);
+		}
+	}
+	else{
+		fstream f1("pipline1.txt");
+		fstream f2("pipline2.txt");
+		fstream f3("pipline3.txt");
+		fstream f4("pipline4.txt");
+		f1.close();
+		f2.close();
+		f3.close();
+		f4.close();
+
+		thread t1(pipLine, S, 1);
+		Sleep(CIRCLETIME);
+		thread t2(pipLine, S, 2);
+		Sleep(CIRCLETIME);
+		thread t3(pipLine, S, 3);
+		Sleep(CIRCLETIME);
+		thread t4(pipLine, S, 4);
+		Sleep(CIRCLETIME);
+		t1.detach();
+		t2.detach();
+		t3.detach();
+		t4.detach();
 	}
 	system("pause");
 }
@@ -170,12 +205,14 @@ int loadData(Score *S){
 	string temp, d_r;
 	int count = 0, imm = -1;
 	if (fout){
-		fout.getline(buffer, 20);
-		instructions.push_back((string)buffer);
-		INSTRUCTION instr = parse(buffer, imm);
-		S->I_status[count++] = new instructStatus(instr.first, instr.second.first, 
-			instr.second.second.first, instr.second.second.second, imm);
-		data_size++;
+		while (!fout.eof()){
+			fout.getline(buffer, 20);
+			instructions.push_back((string)buffer);
+			INSTRUCTION instr = parse(buffer, imm);
+			S->I_status[count++] = new instructStatus(instr.first, instr.second.first,
+				instr.second.second.first, instr.second.second.second, imm);
+			data_size++;
+		}
 	}
 	delete[] buffer;
 	return data_size;
@@ -187,7 +224,7 @@ bool pipOut(Score *S){
 	instructStatus *Ipointer = S->I_status[S->current];
 	FU fun;
 	bool isPip = false;
-	getFU(Ipointer);
+	fun = getFU(Ipointer);
 	//设备是否空闲，且是否存在WAW冲突
 	if (!S->F_status->busy[fun] && S->R_status->resultStatus[Ipointer->D]==FU::FU_NIL){
 		isPip = true;
@@ -219,8 +256,8 @@ bool readOpParam(Score *S){
 	bool read = false;
 	for (int i = S->current - 1; i >= 0; i--){
 		fun = getFU(S->I_status[i]);
-		if ((S->F_status->Rj[fun] == true || S->F_status->Rj[fun] == FU::FU_NIL)&&
-			(S->F_status->Rk[fun] == true || S->F_status->Rk[fun] == FU::FU_NIL)){//读数据条件：两个操作数都已经准备就绪
+		if ((S->F_status->Rj[fun] == true || S->F_status->Qj[fun] == FU::FU_NIL)&&
+			(S->F_status->Rk[fun] == true || S->F_status->Qk[fun] == FU::FU_NIL)){//读数据条件：两个操作数都已经准备就绪
 			S->F_status->Rj[fun] = false;
 			S->F_status->Rk[fun] = false;
 			S->F_status->Qj[fun] = FU::FU_NIL;
@@ -258,8 +295,9 @@ bool writeBack(Score *S){
 	bool exe = false, flag;
 	for (int i = 0; i < S->current; i++){//遍历所有指令
 		instructStatus *instr = S->I_status[i];
-		if (instr->status[EXE]){//只对执行完成的指令进行后续操作
+		if (instr->status[EXE]&&!instr->status[WRITEBACK]){//只对执行完成的指令进行后续操作
 			flag = true;
+			fun = getFU(instr);
 			for (FU j = FU::Integer; j < fu_size; j = (FU)(j+1)){//对于所有的元器件进行检查
 				if (!((S->F_status->Fj[j] != S->F_status->Fi[fun] || !S->F_status->Rj[j]) &&
 					(S->F_status->Fk[j] != S->F_status->Fi[fun] || !S->F_status->Rk[j]))){//如果没有WAR冲突则写回
@@ -279,6 +317,8 @@ bool writeBack(Score *S){
 					if (S->F_status->Qk[k] == i){
 						S->F_status->Rk[k] = true;
 					}
+					S->R_status->resultStatus[fun] = FU::FU_NIL;
+					S->F_status->busy[fun] = false;
 				}
 			}
 		}
@@ -376,14 +416,54 @@ int getCirlce(instructStatus *Ipointer){
 	return circle;
 }
 
-void display(Score *S){
-	cout << "指令状态表" << endl;
-	cout << "指令 \t 流出 \t 读操作数\t 执行\t 写结果\t" << endl;
+void display(Score *S, int i){
+	string filename = "pipline" + to_string(i) + ".txt";
+	ofstream fout(filename, ios::app);
+	fout << "指令状态表" << endl;
+	fout << "指令 \t 流出 \t 读操作数\t 执行\t 写结果\t" << endl;
 	for (int i = 0; i < S->instr_size; i++){
-		cout << instructions[i] << "\t" << S->I_status[i]->status[PIPOUT] << "\t"
+		fout << instructions[i] << "\t" << S->I_status[i]->status[PIPOUT] << "\t"
 			<< S->I_status[i]->status[READPPARAM] << "\t" << S->I_status[i]->status[EXE]
 			<< "\t" << S->I_status[i]->status[WRITEBACK] << endl;
 	}
-	//cout << "-------------------------------------------------------------------------" << endl;
+	fout << "-------------------------------------------------------------------------" << endl;
 	//cout << "功能部件表"
+	fout.close();
+}
+
+void pipLine(Score *S, int i){
+	int n;
+	some_mutex.lock();
+	n = completedI;
+	some_mutex.unlock();
+	while (n != S->instr_size){
+		some_mutex.lock();
+		pipOut(S);
+		display(S, i);
+		some_mutex.unlock();
+
+		Sleep(CIRCLETIME);
+
+		some_mutex.lock();
+		readOpParam(S);
+		display(S, i);
+		some_mutex.unlock();
+
+		Sleep(CIRCLETIME);
+
+		some_mutex.lock();
+		execute(S);
+		display(S, i);
+		some_mutex.unlock();
+
+		Sleep(CIRCLETIME);
+		
+		some_mutex.lock();
+		if (writeBack(S)) completedI++;
+		n = completedI;
+		display(S, i);
+		some_mutex.unlock();
+
+		Sleep(CIRCLETIME);
+	}
 }
